@@ -1,0 +1,50 @@
+name: CI Build & Test
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-x86_64:
+    name: Build x86_64 targets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Native & AVX2 targets
+        run: |
+          make native
+          make avx2
+
+      - name: Build with CMake
+        run: |
+          mkdir build && cd build
+          cmake .. -Dbread_ARCH=native
+          make -j$(nproc)
+
+  build-arm64:
+    name: Cross-compile ARM64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ARM64 Cross-Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-aarch64-linux-gnu cmake
+
+      - name: Build with CMake (ARM64)
+        run: |
+          mkdir build-arm64 && cd build-arm64
+          cmake .. \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -Dbread_ARCH=arm64
+          make -j$(nproc)
+
+      - name: Build with Makefile (ARM64)
+        run: |
+          make arm64 CXX=aarch64-linux-gnu-g++
