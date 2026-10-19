@@ -548,7 +548,7 @@ int Engine::negamax(int depth, int alpha, int beta, Stack* ss, bool cutnode){
         // null move pruning
         // maybe check for zugzwang?
         if (cutnode && (ss - 1)->curr_move != Move::NULL_MOVE && excluded_move == Move::NO_MOVE
-            && eval > beta - depth*nmp_1 + nmp_2 && is_regular_eval(beta)){
+            && eval > beta - depth*nmp_1 + nmp_2 && is_regular_eval(beta) && pos.hasNonPawnMaterial(pos.sideToMove())){
 
             int R = 4 + (eval >= beta) + (eval >= beta + nmp_3) + depth / 4;
 
@@ -589,7 +589,10 @@ int Engine::negamax(int depth, int alpha, int beta, Stack* ss, bool cutnode){
 
         if (!root_node && is_valid(max_value) && !is_loss(max_value)){
 
-            if (move_gen.index() >= 7 + 2*depth*depth + 3*improving){
+            if (move_gen.index() >= 7 + 2*depth*depth + 3*improving)
+                continue;
+
+            if (!is_capture && move_gen.index() >= 7 + depth*depth + 3*improving){
                 move_gen.skip_quiets();
                 continue;
             }
