@@ -19,3 +19,8 @@ Build target API: Android 24. The existing CMake configuration embeds the NNUE m
 ### CMake source-list parsing fix
 
 The `bread_configure()` helper explicitly strips the literal `SOURCES` keyword from its argument list and fails with a clear diagnostic if the list is empty. This addresses the reported `No SOURCES given to target: bread_engine` CMake generation error.
+
+
+### Clang NEON variable-shift fix
+
+Bread's NNUE SIMD wrappers passed runtime `int` shift counts to AVX2 immediate-shift intrinsics (`_mm256_slli_epi16` and `_mm256_srai_epi32`). Clang's AArch64 NEON intrinsics require constant immediates, so SIMDe could not compile those calls. The wrappers now use the AVX2 variable-count forms (`_mm256_sll_epi16` and `_mm256_sra_epi32`) with the count placed in an XMM vector. This retains per-lane shift behavior while allowing runtime counts.
