@@ -1,12 +1,16 @@
 # Android ARM64 builds
 
-GitHub Actions (`.github/workflows/android.yml`) builds two Android `arm64-v8a` UCI binaries:
+The GitHub Actions workflow builds two Android `arm64-v8a` UCI binaries:
 
 - `bread-neon-arm64`: ARMv8-A + NEON baseline.
 - `bread-dotprod-arm64`: ARMv8.2-A + dot-product target for compatible CPUs.
 
-The original NNUE SIMD implementation is written using AVX2 intrinsics and did not include ARM NEON or ARM dotprod paths. `src/nnue/simd.hpp` now uses SIMDe's AVX2 compatibility API on AArch64. SIMDe is fetched by the workflow and maps supported operations to the target's native SIMD implementation. The dotprod artifact may use dot-product instructions when the compiler/SIMDe implementation can map the relevant operations; it is not a separate hand-written NNUE dotprod kernel.
+Bread's NNUE implementation uses x86 intrinsic APIs. On AArch64, the relevant AVX2/SSE intrinsic compatibility API is supplied by SIMDe, downloaded during the workflow. The dotprod build is compiled with `-march=armv8.2-a+dotprod`; that target flag permits the compiler to use dot-product instructions where the translated operations allow it, but does not prove that a particular hot loop emits `SDOT`.
 
-**Compatibility:** run the NEON artifact on general 64-bit ARM Android devices. Run the dotprod artifact only on CPUs advertising `asimddp` / `dotprod` (for example, ARMv8.2-A CPUs with that extension). The dotprod binary is not expected to run on older NEON-only devices.
+The workflow configures Java 17 before Android SDK setup to avoid `sdkmanager` failures with unsupported Java runtimes, and asks `setup-android` to install NDK 27.2.12479018 rather than calling `sdkmanager` a second time manually.
 
-Builds target Android API 24 and use the bundled NNUE model via the existing CMake `INCBIN` mechanism.
+**Compatibility:** use the NEON binary on general 64-bit ARM Android devices. Use the dotprod binary only on CPUs advertising the dot-product feature (Linux feature name `asimddp`). The dotprod binary may not run on older NEON-only devices.
+
+Build target API: Android 24. The existing CMake configuration embeds the NNUE model using its existing `INCBIN` mechanism.
+
+**Validation status:** the workflow and source changes have not yet been confirmed by a successful remote GitHub Actions build. Treat the first run's compiler output as the final check for any remaining intrinsic compatibility issues.
