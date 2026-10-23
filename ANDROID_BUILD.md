@@ -14,3 +14,8 @@ The workflow configures Java 17 before Android SDK setup to avoid `sdkmanager` f
 Build target API: Android 24. The existing CMake configuration embeds the NNUE model using its existing `INCBIN` mechanism.
 
 **Validation status:** the workflow and source changes have not yet been confirmed by a successful remote GitHub Actions build. Treat the first run's compiler output as the final check for any remaining intrinsic compatibility issues.
+
+
+### CMake source-list parsing fix
+
+The `bread_configure()` helper explicitly strips the literal `SOURCES` keyword from its argument list and fails with a clear diagnostic if the list is empty. This addresses the reported `No SOURCES given to target: bread_engine` CMake generation error.
