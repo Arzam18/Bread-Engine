@@ -8,7 +8,14 @@
 #include <cstdint>
 #include <stdio.h>
 #include <chess.hpp>
-#include <immintrin.h>
+#if defined(__aarch64__) || defined(_M_ARM64)
+    #ifndef SIMDE_ENABLE_NATIVE_ALIASES
+        #define SIMDE_ENABLE_NATIVE_ALIASES
+    #endif
+    #include <simde/x86/avx2.h>
+#else
+    #include <immintrin.h>
+#endif
 #include "constants.hpp"
 #include "nnue_misc.hpp"
 
