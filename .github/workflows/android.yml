@@ -1,50 +1,69 @@
-name: CI Build & Test
+name: Android ARM64
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    paths:
+      - "src/**"
+      - "neural_networks/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: read
 
 jobs:
-  build-x86_64:
-    name: Build x86_64 targets
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: neon
+            arch: armv8-a+simd
+          - variant: dotprod
+            arch: armv8.2-a+dotprod
     steps:
-      - name: Checkout repository
+      - name: Checkout Bread
         uses: actions/checkout@v4
 
-      - name: Build Native & AVX2 targets
-        run: |
-          make native
-          make avx2
+      - name: Install Android NDK
+        uses: android-actions/setup-android@v3
 
-      - name: Build with CMake
+      - name: Set up NDK
+        shell: bash
         run: |
-          mkdir build && cd build
-          cmake .. -Dbread_ARCH=native
-          make -j$(nproc)
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "ndk;27.2.12479018"
 
-  build-arm64:
-    name: Cross-compile ARM64
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Fetch SIMDe
+        run: git clone --depth 1 https://github.com/simd-everywhere/simde.git simde
 
-      - name: Install ARM64 Cross-Compiler
+      - name: Build ${{ matrix.variant }}
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y g++-aarch64-linux-gnu cmake
+          set -euxo pipefail
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cmake -S . -B "build-${{ matrix.variant }}" \\
+            -DCMAKE_BUILD_TYPE=Release \\
+            -DCMAKE_SYSTEM_NAME=Android \\
+            -DCMAKE_SYSTEM_VERSION=24 \\
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \\
+            -DCMAKE_ANDROID_NDK="$ANDROID_NDK_HOME" \\
+            -DCMAKE_CXX_COMPILER="$TOOLCHAIN/aarch64-linux-android24-clang++" \\
+            -DCMAKE_CXX_FLAGS="-O3 -I$GITHUB_WORKSPACE/simde -march=${{ matrix.arch }} -static-libstdc++" \\
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \\
+            -Dbread_ARCH=${{ matrix.arch }}
+          cmake --build "build-${{ matrix.variant }}" --target bread_engine --parallel 2
+          mkdir -p "artifact-${{ matrix.variant }}"
+          cp "build-${{ matrix.variant }}/bread_engine_$(cat version.txt)" "artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64"
+          file "artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64"
+          "$TOOLCHAIN/llvm-readelf" -h "artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64"
 
-      - name: Build with CMake (ARM64)
-        run: |
-          mkdir build-arm64 && cd build-arm64
-          cmake .. \
-            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
-            -Dbread_ARCH=arm64
-          make -j$(nproc)
-
-      - name: Build with Makefile (ARM64)
-        run: |
-          make arm64 CXX=aarch64-linux-gnu-g++
+      - name: Upload ${{ matrix.variant }} binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bread-${{ matrix.variant }}-arm64
+          path: artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64
+          if-no-files-found: error
