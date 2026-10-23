@@ -316,12 +316,17 @@
         return _mm256_maddubs_epi16(v1, v2);
     }
 
+    // The immediate-shift AVX2 intrinsics require compile-time constants.
+    // Bread passes these shift counts as function parameters, which Clang's
+    // AArch64 NEON intrinsics reject when SIMDe maps them to vshlq_n_*.
+    // Use the AVX2 variable-count forms instead; these preserve the same
+    // lane-wise shift semantics for runtime counts.
     inline vec_int32 slli_epi16(vec_int32 v, int i) {
-        return _mm256_slli_epi16(v, i);
+        return _mm256_sll_epi16(v, _mm_cvtsi32_si128(i));
     }
 
     inline vec_int32 srai_epi32(vec_int32 v, int i) {
-        return _mm256_srai_epi32(v, i);
+        return _mm256_sra_epi32(v, _mm_cvtsi32_si128(i));
     }
 
     #ifdef HAS_VNNI256
