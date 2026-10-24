@@ -1,9 +1,13 @@
+
 #include "uci.hpp"
 
 UCIAgent::UCIAgent(): workers(1, tt) {};
 
 bool UCIAgent::process_uci_command(std::string command){
     std::vector<std::string> parsed_command = split_string(command);
+    if (parsed_command.empty())
+        return true;
+
     std::string first = parsed_command[0];
 
     if (first == "uci"){
@@ -14,7 +18,7 @@ bool UCIAgent::process_uci_command(std::string command){
         std::cout << "option name Hash type spin default 256 min " << TT_MIN_SIZE << " max " << TT_MAX_SIZE << std::endl;
         std::cout << "option name Threads type spin default 1 min 1 max 1024" << std::endl;
         std::cout << "option name Nonsense type check default false" << std::endl;
-        // spsa tune options
+
         auto& tuneables = SPSA::get_values();
         for (const auto& [name, info] : tuneables) {
             std::cout << "option name " << name << " type spin default " << *info.val_ptr
@@ -24,32 +28,23 @@ bool UCIAgent::process_uci_command(std::string command){
         std::cout << "uciok" << std::endl;
     } else if (first == "setoption"){
         process_setoption(parsed_command);
-
     } else if (first == "isready"){
         std::cout << "readyok" << std::endl;
-
     } else if (first == "ucinewgame"){
         pos.setFen(constants::STARTPOS);
         workers.clear_state();
-
     } else if (first == "position"){
         process_position(parsed_command);
-    
     } else if (first == "bench"){
         process_bench(parsed_command);
-
     } else if (first == "eval"){
         process_eval(parsed_command);
-
     } else if (first == "go"){
         process_go(parsed_command);
-
     } else if (first == "ponderhit"){
         workers.update_limit(SearchLimit(LimitType::Time, cached_think_time));
-
     } else if (first == "stop"){
         workers.interrupt_and_join_threads();
-
     } else if (first == "quit"){
         workers.interrupt_and_join_threads();
         return false;
@@ -61,7 +56,7 @@ bool UCIAgent::process_uci_command(std::string command){
 }
 
 void UCIAgent::process_setoption(std::vector<std::string> command){
-    assert(command.size() >= 5); // setoption name ... value ...
+    assert(command.size() >= 5);
     std::string option_name = command[2];
     std::string option_value = command[4];
 
@@ -69,7 +64,6 @@ void UCIAgent::process_setoption(std::vector<std::string> command){
 
     if (option_name == "SyzygyPath"){
         std::string path = option_value;
-        // handle path containing spaces
         for (int i = 5; i < command.size(); i++)
             path += " " + command[i];
 
@@ -104,6 +98,9 @@ void UCIAgent::process_setoption(std::vector<std::string> command){
 }
 
 void UCIAgent::process_position(std::vector<std::string> command){
+    if (command.size() < 2)
+        return;
+
     workers.interrupt_and_join_threads();
 
     std::string fen = "";
@@ -111,37 +108,42 @@ void UCIAgent::process_position(std::vector<std::string> command){
         fen = constants::STARTPOS;
     } else if (command[1] == "fen") {
         for (int i = 2; i < command.size(); i++){
+            if (command[i] == "moves")
+                break;
             if (i > 2) fen += ' ';
             fen += command[i];
         }
     }
 
+    if (fen.empty())
+        return;
+
     pos.setFen(fen);
 
-    bool is_movelist = false; 
+    bool is_movelist = false;
     for (int i = 2; i < command.size(); i++){
         std::string token = command[i];
+        if (token == "moves") {
+            is_movelist = true;
+            continue;
+        }
         if (is_movelist)
             pos.makeMove(uci::uciToMove(pos, token));
-
-        if (token == "moves")
-            is_movelist = true;
     }
 
     workers.set_position(pos);
 }
 
 void UCIAgent::process_bench(std::vector<std::string> command){
-    if (command.size() == 1)
+    if (command.size() == 1) {
         Benchmark::benchmark_engine(workers.main().engine, BENCHMARK_DEPTH);
-    else if (command[1] == "nn")
+    } else if (command[1] == "nn") {
         Benchmark::benchmark_nn();
-    else if (command[1] == "long")
+    } else if (command[1] == "long") {
         Benchmark::benchmark_engine(workers.main().engine, LONG_BENCHMARK_DEPTH);
-    else if (command[1] == "activation")
-        Benchmark::benchmark_ft_activation();
-    else
+    } else {
         Benchmark::benchmark_engine(workers.main().engine, std::stoi(command[1]));
+    }
 }
 
 void UCIAgent::process_eval(std::vector<std::string> command){
@@ -152,6 +154,9 @@ void UCIAgent::process_eval(std::vector<std::string> command){
 }
 
 void UCIAgent::process_go(std::vector<std::string> command){
+    if (command.size() < 2)
+        return;
+
     workers.interrupt_and_join_threads();
 
     std::string go_type = command[1];
@@ -160,11 +165,11 @@ void UCIAgent::process_go(std::vector<std::string> command){
     if (go_type == "ponder"){
         cached_think_time = get_think_time_from_go_command(command);
         limit = SearchLimit(LimitType::Depth, ENGINE_MAX_DEPTH);
-    } else if (go_type == "movetime"){
+    } else if (go_type == "movetime" && command.size() > 2){
         limit = SearchLimit(LimitType::Time, std::stoi(command[2]));
-    } else if (go_type == "depth"){
+    } else if (go_type == "depth" && command.size() > 2){
         limit = SearchLimit(LimitType::Depth, std::stoi(command[2]));
-    } else if (go_type == "nodes"){
+    } else if (go_type == "nodes" && command.size() > 2){
         if (workers.size() != 1){
             std::cout << "info string multithreaded go nodes is not supported" << std::endl;
             return;
@@ -187,9 +192,11 @@ int UCIAgent::get_think_time_from_go_command(std::vector<std::string> command){
     int winc = 0;
     int binc = 0;
     int movestogo = 0;
+
     for (int i = 1; i + 1 < command.size(); i++){
         std::string token = command[i];
         std::string next_token = command[i+1];
+
         if (token == "wtime")
             wtime = std::stoi(next_token);
         else if (token == "btime")
@@ -200,11 +207,11 @@ int UCIAgent::get_think_time_from_go_command(std::vector<std::string> command){
             binc = std::stoi(next_token);
         else if (token == "movestogo")
             movestogo = std::stoi(next_token);
-    };
+    }
 
     bool engine_white = (pos.sideToMove() == Color::WHITE);
-    return get_think_time(engine_white ? wtime: btime, 
+    return get_think_time(engine_white ? wtime : btime,
                           num_moves_out_of_book,
                           movestogo,
-                          engine_white ? winc: binc);
+                          engine_white ? winc : binc);
 }
