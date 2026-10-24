@@ -1,7 +1,7 @@
+
 #include "benchmark.hpp"
 
 namespace Benchmark {
-
 inline std::vector<std::string> fens = {
     "1k1r4/pp1b1R2/3q2pp/4p3/2B5/4Q3/PPP2B2/2K5 b - -",
     "3r1k2/4npp1/1ppr3p/p6P/P2PPPP1/1NR5/5K2/2R5 w - -",
@@ -13,29 +13,27 @@ inline std::vector<std::string> fens = {
     "3rr1k1/pp3pp1/1qn2np1/8/3p4/PP1R1P2/2P1NQPP/R1B3K1 b - -",
     "2r1nrk1/p2q1ppp/bp1p4/n1pPp3/P1P1P3/2PBB1N1/4QPPP/R4RK1 w - -",
     "r3r1k1/ppqb1ppp/8/4p1NQ/8/2P5/PP3PPP/R3R1K1 b - -",
-    "r2q1rk1/4bppp/p2p4/2pP4/3pP3/3Q4/PP1B1PPP/R3R1K1 w - -",
+    "r2q1rk1/4bppp/2p2p4/2pP4/3pP3/3Q4/PP1B1PPP/R3R1K1 w - -",
     "rnb2r1k/pp2p2p/2pp2p1/q2P1p2/8/1Pb2NP1/PB2PPBP/R2Q1RK1 w - -",
     "2r3k1/1p2q1pp/2b1pr2/p1pp4/6Q1/1P1PP1R1/P1PN2PP/5RK1 w - -",
     "r1bq1rk1/pp2ppbp/2np2p1/2n5/P3PP2/N1P2N2/1PB3PP/R1B1QRK1 b - -",
     "3rr3/2pq2pk/p2p1pnp/8/2QBPP2/1P6/P5PP/4RRK1 b - -",
     "3rn2k/ppb2rpp/2ppqp2/5N2/2P1P3/1P5Q/PB3PPP/3RR1K1 w - -",
     "2r2rk1/1bqnbpp1/1p1ppn1p/pP6/N1P1P3/P2B1N1P/1B2QPP1/R2R2K1 b - -",
-    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10", // kiwipete
-    "k7/5K2/1B6/P5p1/7p/8/8/8 w - - 0 1", // bishop vs pawn endgame
-    "8/5k2/8/8/3K4/3B4/3N4/8 w - - 0 1", // bishop knight mate
-    "8/6pk/3R3p/r6P/5PK1/6P1/8/8 b - - 78 83", // rook endgame
-    "8/8/5kb1/8/8/5KP1/6R1/8 w - - 96 1", // high r50 counter
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 10",
+    "k7/5K2/1B6/P5p1/7p/8/8/8 w - - 0 1",
+    "8/5k2/8/8/3K4/3B4/3N4/8 w - - 0 1",
+    "8/6pk/3R3p/r6P/5PK1/6P1/8/8 b - - 78 83",
+    "8/8/5kb1/8/8/5KP1/6R1/8 w - - 96 1",
 };
 
-int64_t sum(std::vector<int> values){
+int64_t sum(std::vector<int> values) {
     int64_t total = 0;
-    for (int v: values)
+    for (int v : values)
         total += v;
-
     return total;
 }
 
-// returns indices that would sort x in descending order of value.
 template <typename T, std::size_t N>
 std::vector<int> rank_by_value(const std::array<T, N>& x) {
     std::vector<int> indices(x.size());
@@ -54,20 +52,19 @@ std::vector<std::string> load_fens(const std::string& filename) {
     std::vector<std::string> fens;
     std::ifstream file(filename);
     std::string line;
-    
+
     if (!file.is_open()) {
         std::cerr << "error, could not open file " << filename << std::endl;
         return fens;
     }
-    
+
     while (std::getline(file, line))
         fens.push_back(line);
 
-    file.close();
     return fens;
 }
 
-void benchmark_nn(){
+void benchmark_nn() {
     std::cout << "============================== \n";
     std::cout << "evaluation function benchmark: \n";
 
@@ -77,88 +74,50 @@ void benchmark_nn(){
     for (int i = 0; i < 10'000'000; i++)
         board.evaluate();
 
-    int mean = 1000*duration_cast<microseconds>(high_resolution_clock::now() - start).count()/10'000'000;
+    int mean = 1000 * duration_cast<microseconds>(
+        high_resolution_clock::now() - start).count() / 10'000'000;
+
     std::cout << "time taken: " << mean << " nanoseconds per call\n";
     std::cout << "============================== \n";
 }
 
-void benchmark_engine(Engine& engine, int depth){
+void benchmark_engine(Engine& engine, int depth) {
     engine.tt.clear();
     engine.clear_state();
 
     std::vector<int> times;
     std::vector<int> nodes;
-    
+
     time_point<high_resolution_clock> start_time;
     int count = 1;
-    for (auto fen: fens){
-        std::cout << "position " << count++ << " / " << fens.size() << ": " << fen << std::endl;
+
+    for (auto fen : fens) {
+        std::cout << "position " << count++ << " / " << fens.size()
+                  << ": " << fen << std::endl;
 
         start_time = high_resolution_clock::now();
 
         engine.pos.setFen(fen);
         engine.iterative_deepening(SearchLimit(LimitType::Depth, depth));
 
-        times.push_back(duration_cast<milliseconds>(high_resolution_clock::now() - start_time).count());
+        times.push_back(duration_cast<milliseconds>(
+            high_resolution_clock::now() - start_time).count());
         nodes.push_back(engine.nodes);
 
         std::cout << std::endl;
     }
 
     engine.tt.info();
+
     std::cout << "=================================" << std::endl;
     std::cout << "total nodes: " << sum(nodes) << std::endl;
     std::cout << "average nodes: " << sum(nodes) / fens.size() << std::endl;
     std::cout << "total time: " << sum(times) << " ms" << std::endl;
-    std::cout << "average nodes per second: " << 1000 * sum(nodes) / sum(times) << std::endl;
+    std::cout << "average nodes per second: "
+              << 1000 * sum(nodes) / sum(times) << std::endl;
     std::cout << "=================================" << std::endl;
 
     engine.pos.setFen(constants::STARTPOS);
-}
-
-void benchmark_ft_activation(){
-    std::cout << "============================== \n";
-    std::cout << "accumulator activations benchmark: \n";
-
-    std::array<int, ACC_SIZE / 2> zero_count = {0};
-
-    std::vector<std::string> fens = load_fens(bread_NNUE_FENS_PATH);
-
-    NnueBoard board = NnueBoard();
-    for (auto fen: fens){
-
-        board.setFen(fen);
-        board.synchronize();
-    
-        Color stm = board.sideToMove();
-        Accumulators& accumulators = board.accumulators_stack.top();
-        uint8_t pairwise_output[ACC_SIZE / 2];
-
-        NNUE_UTILS::pairwise_screlu16_to_8(
-            &accumulators[stm][0],
-            &accumulators[stm][ACC_SIZE / 2],
-            pairwise_output, ACC_SIZE / 2
-        );
-
-        for (int j = 0; j < ACC_SIZE / 2; j++){
-            zero_count[j] += (pairwise_output[j] == 0);
-        }
-    }
-
-    for (int i = 0; i < zero_count.size(); i++)
-        std::cout << (i ? ", " : "") << zero_count[i];
-    std::cout << std::endl;
-
-    std::cout << "============================== \n";
-    std::cout << "weight permutation: \n";
-
-     std::vector<int> permutation = rank_by_value(zero_count);
-
-    for (std::size_t i = 0; i < permutation.size(); i++)
-        std::cout << (i ? ", " : "") << FT_PERMUTATION[permutation[i]]; // compose with the existing weight permutation
-    std::cout << std::endl;
-
-    std::cout << "============================== \n";
 }
 
 } // namespace Benchmark
