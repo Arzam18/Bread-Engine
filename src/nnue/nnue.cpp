@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <bit>
 #include "simd.hpp"
-#include "nnue.misc.hpp"
+#include "nnue_misc.hpp"
 
 constexpr int L1_INPUT_SIZE = 1536;
 extern uint16_t nnz_lookup[256][8];
