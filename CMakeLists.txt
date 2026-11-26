@@ -6,6 +6,9 @@ project(bread_engine VERSION ${bread_VERSION} LANGUAGES CXX)
 
 set(bread_DEFAULT_NAME "bread_engine_${CMAKE_PROJECT_VERSION}")
 
+# Optional YYYYMMDD identifier supplied by CI builds.
+set(bread_BUILD_DATE "" CACHE STRING "Build identity date in YYYYMMDD format")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
@@ -89,6 +92,7 @@ function(bread_configure bread_TARGET)
     target_include_directories(${bread_TARGET} PRIVATE ${bread_INCLUDE_DIRS})
     
     target_compile_definitions(${bread_TARGET} PRIVATE bread_VERSION="${CMAKE_PROJECT_VERSION}")
+    target_compile_definitions(${bread_TARGET} PRIVATE bread_BUILD_DATE="${bread_BUILD_DATE}")
 
     target_compile_definitions(${bread_TARGET} PRIVATE bread_NNUE_MODEL_PATH="${bread_NNUE_MODEL_PATH}")
 

@@ -1,26 +1,20 @@
 # Android ARM64 builds
 
-The GitHub Actions workflow builds two Android `arm64-v8a` UCI binaries:
+The manually triggered GitHub Actions workflow builds two Android `arm64-v8a` UCI binaries:
 
-- `bread-neon-arm64`: ARMv8-A + NEON baseline.
-- `bread-dotprod-arm64`: ARMv8.2-A + dot-product target for compatible CPUs.
+- `bread-neon-arm64`: Armv8-A baseline with Advanced SIMD / NEON.
+- `bread-dotprod-arm64`: Armv8.2-A with the DotProd extension enabled.
 
-Bread's NNUE implementation uses x86 intrinsic APIs. On AArch64, the relevant AVX2/SSE intrinsic compatibility API is supplied by SIMDe, downloaded during the workflow. The dotprod build is compiled with `-march=armv8.2-a+dotprod`; that target flag permits the compiler to use dot-product instructions where the translated operations allow it, but does not prove that a particular hot loop emits `SDOT`.
+Bread's NNUE implementation uses x86 AVX2 intrinsic APIs. On AArch64, SIMDe maps those aliases to ARM Advanced SIMD instructions. The Android build installs the Ubuntu `libsimde-dev` package; it does not clone SIMDe from GitHub. This avoids depending on a Git clone that may be rejected with HTTP 403.
 
-The workflow configures Java 17 before Android SDK setup to avoid `sdkmanager` failures with unsupported Java runtimes, and asks `setup-android` to install NDK 27.2.12479018 rather than calling `sdkmanager` a second time manually.
+The NEON baseline uses `-march=armv8-a`. For AArch64, Armv8-A includes Advanced SIMD / NEON by default, so an explicit `+simd` suffix is unnecessary. The DotProd build uses `-march=armv8.2-a+dotprod`.
 
-**Compatibility:** use the NEON binary on general 64-bit ARM Android devices. Use the dotprod binary only on CPUs advertising the dot-product feature (Linux feature name `asimddp`). The dotprod binary may not run on older NEON-only devices.
+The NNUE model is embedded by the existing `INCBIN` implementation. The uploaded source snapshot contains five model components; if the feature-transformer weights are absent, the workflow downloads the matching file only after checking that upstream `version.txt` still matches Bread 4.0.0, then verifies its expected 18,874,368-byte size.
 
-Build target API: Android 24. The existing CMake configuration embeds the NNUE model using its existing `INCBIN` mechanism.
+The workflow accepts a manual `uci_date` input and appends it to the UCI engine identity.
 
-**Validation status:** the workflow and source changes have not yet been confirmed by a successful remote GitHub Actions build. Treat the first run's compiler output as the final check for any remaining intrinsic compatibility issues.
+The DotProd target flag does not guarantee that the current NNUE kernels emit `SDOT`/`UDOT`. The workflow records the actual instruction count instead of claiming that DotProd instructions were generated.
 
+Build target API: Android 24. NDK: 27.2.12479018 (r27c). C++ runtime: static.
 
-### CMake source-list parsing fix
-
-The `bread_configure()` helper explicitly strips the literal `SOURCES` keyword from its argument list and fails with a clear diagnostic if the list is empty. This addresses the reported `No SOURCES given to target: bread_engine` CMake generation error.
-
-
-### Clang NEON variable-shift fix
-
-Bread's NNUE SIMD wrappers passed runtime `int` shift counts to AVX2 immediate-shift intrinsics (`_mm256_slli_epi16` and `_mm256_srai_epi32`). Clang's AArch64 NEON intrinsics require constant immediates, so SIMDe could not compile those calls. The wrappers now use the AVX2 variable-count forms (`_mm256_sll_epi16` and `_mm256_sra_epi32`) with the count placed in an XMM vector. This retains per-lane shift behavior while allowing runtime counts.
+Runtime UCI testing must be performed on an Android ARM64 device; the Ubuntu runner does not execute the Android binary.
