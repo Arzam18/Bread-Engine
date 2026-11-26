@@ -1,38 +1,115 @@
-name: Android ARM64
+name: Bread Android ARM64 NEON and DotProd
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "src/**"
-      - "neural_networks/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/android.yml"
+    inputs:
+      uci_date:
+        description: "UCI build identity date (YYYYMMDD)"
+        required: true
+        default: "20261126"
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build Bread ${{ matrix.name }}
     runs-on: ubuntu-24.04
+
     strategy:
       fail-fast: false
       matrix:
         include:
-          - variant: neon
-            arch: armv8-a+simd
-          - variant: dotprod
+          - name: NEON
+            variant: neon
+            arch: armv8-a
+            artifact: bread-neon-arm64
+            dotprod: "OFF"
+
+          - name: DotProd
+            variant: dotprod
             arch: armv8.2-a+dotprod
+            artifact: bread-dotprod-arm64
+            dotprod: "ON"
+
+    env:
+      ANDROID_API: "24"
+      NDK_VERSION: "r27c"
+      NDK_REVISION: "27.2.12479018"
+      BREAD_VERSION: "4.0.0"
+      MODEL_DIR: "neural_networks/NNUE_(768x8_1536pw)x2_(16dual_1)x8"
+      FT_WEIGHTS_URL: "https://raw.githubusercontent.com/Nonlinear2/Bread-Engine/main/neural_networks/NNUE_%28768x8_1536pw%29x2_%2816dual_1%29x8/feature_transformer/weights.bin"
+
     steps:
-      - name: Checkout Bread
+      - name: Checkout Bread Android source
         uses: actions/checkout@v4
 
-      # sdkmanager (including cmdline-tools 16.0) requires a supported Java runtime.
+      - name: Validate source and manual build date
+        shell: bash
+        env:
+          UCI_DATE: ${{ inputs.uci_date }}
+        run: |
+          set -euo pipefail
+
+          [[ "$UCI_DATE" =~ ^[0-9]{8}$ ]] || {
+            echo "ERROR: uci_date must use YYYYMMDD."
+            exit 1
+          }
+
+          date -u -d \
+            "${UCI_DATE:0:4}-${UCI_DATE:4:2}-${UCI_DATE:6:2}" \
+            '+%Y%m%d' >/dev/null
+
+          test "$(tr -d '\r\n' < version.txt)" = "$BREAD_VERSION"
+          grep -Fq 'SIMDE_ENABLE_NATIVE_ALIASES' src/nnue/simd.hpp
+          grep -Fq 'simde/x86/avx2.h' src/nnue/simd.hpp
+          grep -Fq '_mm256_sll_epi16' src/nnue/simd.hpp
+          grep -Fq '_mm256_sra_epi32' src/nnue/simd.hpp
+          grep -Fq 'simde/x86/avx2.h' src/nnue/nnue.hpp
+          grep -Fq 'bread_BUILD_DATE' CMakeLists.txt
+          grep -Fq 'bread_BUILD_DATE' src/uci.cpp
+
+          test -s "$MODEL_DIR/feature_transformer/bias.bin"
+          test -s "$MODEL_DIR/layer_1/weights.bin"
+          test -s "$MODEL_DIR/layer_1/bias.bin"
+          test -s "$MODEL_DIR/layer_2/weights.bin"
+          test -s "$MODEL_DIR/layer_2/bias.bin"
+
+          {
+            echo "### Bread Android build"
+            echo "- Engine: Bread ${BREAD_VERSION}"
+            echo "- UCI build date: ${UCI_DATE}"
+            echo "- Android ABI: arm64-v8a"
+            echo "- Android API: ${ANDROID_API}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install build tools and SIMDe headers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            file \
+            binutils \
+            python3 \
+            libsimde-dev
+
+          SIMDE_HEADER="/usr/include/simde/x86/avx2.h"
+          test -s "$SIMDE_HEADER"
+
+          echo "===== Installed SIMDe package ====="
+          dpkg-query -W -f='${Version}\n' libsimde-dev | tee simde-version.txt
+          echo "SIMDe header: $SIMDE_HEADER"
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Android SDK and NDK
         uses: android-actions/setup-android@v3
@@ -44,38 +121,387 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           NDK="$ANDROID_SDK_ROOT/ndk/27.2.12479018"
+          NDK_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
           test -d "$NDK"
+          test -x "$NDK_BIN/aarch64-linux-android24-clang++"
+          test -x "$NDK_BIN/llvm-objdump"
+          test -x "$NDK_BIN/llvm-readelf"
+
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_CXX=$NDK_BIN/aarch64-linux-android24-clang++" >> "$GITHUB_ENV"
+          echo "NDK_BIN=$NDK_BIN" >> "$GITHUB_ENV"
 
-      - name: Fetch SIMDe
-        run: git clone --depth 1 https://github.com/simd-everywhere/simde.git simde
-
-      - name: Build ${{ matrix.variant }}
+      - name: Restore missing source-matched NNUE weights
         shell: bash
         run: |
-          set -euxo pipefail
-          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          cmake -S . -B "build-${{ matrix.variant }}" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_SYSTEM_VERSION=24 \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
-            -DCMAKE_ANDROID_NDK="$ANDROID_NDK_HOME" \
-            -DCMAKE_CXX_COMPILER="$TOOLCHAIN/aarch64-linux-android24-clang++" \
-            -DCMAKE_CXX_FLAGS="-O3 -I$GITHUB_WORKSPACE/simde -march=${{ matrix.arch }} -static-libstdc++" \
-            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
-            -Dbread_ARCH=${{ matrix.arch }}
-          cmake --build "build-${{ matrix.variant }}" --target bread_engine --parallel 2
-          mkdir -p "artifact-${{ matrix.variant }}"
-          cp "build-${{ matrix.variant }}/bread_engine_$(cat version.txt)" "artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64"
-          file "artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64"
-          "$TOOLCHAIN/llvm-readelf" -h "artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64"
+          set -euo pipefail
 
-      - name: Upload ${{ matrix.variant }} binary
+          FT_WEIGHTS="$MODEL_DIR/feature_transformer/weights.bin"
+          EXPECTED_SIZE=18874368
+
+          if [[ ! -s "$FT_WEIGHTS" ]]; then
+            echo "Feature-transformer weights are absent; checking matching upstream version."
+
+            UPSTREAM_VERSION="$(curl -fsSL \
+              https://raw.githubusercontent.com/Nonlinear2/Bread-Engine/main/version.txt)"
+
+            if [[ "$(printf '%s' "$UPSTREAM_VERSION" | tr -d '\r\n')" != "$BREAD_VERSION" ]]; then
+              echo "ERROR: Upstream version does not match Bread ${BREAD_VERSION}."
+              echo "Upstream version: $UPSTREAM_VERSION"
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "$FT_WEIGHTS")"
+            curl -fL --retry 3 --retry-delay 2 \
+              "$FT_WEIGHTS_URL" \
+              -o "$FT_WEIGHTS"
+          fi
+
+          ACTUAL_SIZE="$(stat -c '%s' "$FT_WEIGHTS")"
+          if [[ "$ACTUAL_SIZE" != "$EXPECTED_SIZE" ]]; then
+            echo "ERROR: Incorrect feature-transformer weight size."
+            echo "Expected: $EXPECTED_SIZE bytes"
+            echo "Actual:   $ACTUAL_SIZE bytes"
+            exit 1
+          fi
+
+          MODEL_FILES=(
+            "$MODEL_DIR/feature_transformer/weights.bin"
+            "$MODEL_DIR/feature_transformer/bias.bin"
+            "$MODEL_DIR/layer_1/weights.bin"
+            "$MODEL_DIR/layer_1/bias.bin"
+            "$MODEL_DIR/layer_2/weights.bin"
+            "$MODEL_DIR/layer_2/bias.bin"
+          )
+
+          for model_file in "${MODEL_FILES[@]}"; do
+            test -s "$model_file"
+          done
+
+          sha256sum "${MODEL_FILES[@]}" | tee nnue-model.sha256
+          echo "All six NNUE components verified."
+
+      - name: Verify target compiler and SIMD features
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ matrix.variant }}" in
+            neon)
+              EXPECTED_ARCH="armv8-a"
+              ;;
+            dotprod)
+              EXPECTED_ARCH="armv8.2-a+dotprod"
+              ;;
+            *)
+              echo "ERROR: Unknown variant."
+              exit 1
+              ;;
+          esac
+
+          COMPILER_MACROS="$(printf '\n' | "$ANDROID_CXX" \
+            -march="$EXPECTED_ARCH" \
+            -mtune=cortex-a76 \
+            -dM -E -x c++ -)"
+
+          grep -q '^#define __aarch64__' <<< "$COMPILER_MACROS"
+          grep -q '^#define __ARM_NEON' <<< "$COMPILER_MACROS"
+
+          if [[ "${{ matrix.variant }}" == "dotprod" ]]; then
+            grep -q '^#define __ARM_FEATURE_DOTPROD' <<< "$COMPILER_MACROS"
+          else
+            if grep -q '^#define __ARM_FEATURE_DOTPROD' <<< "$COMPILER_MACROS"; then
+              echo "ERROR: DotProd is enabled in the baseline NEON compiler."
+              exit 1
+            fi
+          fi
+
+          echo "AArch64 compiler target verified: $EXPECTED_ARCH"
+          echo "Advanced SIMD / NEON compiler feature verified."
+
+      - name: Compile SIMDe intrinsic probe
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROBE="$RUNNER_TEMP/bread-simde-probe.cpp"
+          cat > "$PROBE" <<'CPP'
+          #define SIMDE_ENABLE_NATIVE_ALIASES
+          #include <simde/x86/avx2.h>
+
+          __m256i bread_probe_shift_left(__m256i value, int count) {
+              return _mm256_sll_epi16(value, _mm_cvtsi32_si128(count));
+          }
+
+          __m256i bread_probe_shift_right(__m256i value, int count) {
+              return _mm256_sra_epi32(value, _mm_cvtsi32_si128(count));
+          }
+
+          __m256i bread_probe_madd(__m256i a, __m256i b) {
+              return _mm256_madd_epi16(a, b);
+          }
+          CPP
+
+          "$ANDROID_CXX" \
+            -std=c++20 \
+            -O3 \
+            -march="${{ matrix.arch }}" \
+            -mtune=cortex-a76 \
+            -fsyntax-only \
+            "$PROBE"
+
+          echo "SIMDe AVX2 aliases and variable-shift intrinsics compile for ${{ matrix.arch }}."
+
+      - name: Configure Bread ${{ matrix.name }}
+        shell: bash
+        env:
+          UCI_DATE: ${{ inputs.uci_date }}
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+          TOOLCHAIN="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+
+          cmake \
+            -S . \
+            -B "$BUILD_DIR" \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_VERSION="$ANDROID_API" \
+            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
+            -DCMAKE_ANDROID_STL_TYPE=c++_static \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_CXX_COMPILER="$ANDROID_CXX" \
+            -DCMAKE_CXX_FLAGS="-O3 -mtune=cortex-a76" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
+            -Dbread_ARCH="${{ matrix.arch }}" \
+            -Dbread_BUILD_DATE="$UCI_DATE"
+
+      - name: Verify generated compiler configuration
+        shell: bash
+        env:
+          UCI_DATE: ${{ inputs.uci_date }}
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+          COMPILE_COMMANDS="$BUILD_DIR/compile_commands.json"
+          test -s "$COMPILE_COMMANDS"
+
+          python3 - \
+            "$COMPILE_COMMANDS" \
+            "$ANDROID_NDK_HOME" \
+            "${{ matrix.arch }}" \
+            "$UCI_DATE" <<'PY'
+          import json
+          import os
+          import shlex
+          import shutil
+          import sys
+          from pathlib import Path
+
+          compile_file = Path(sys.argv[1])
+          ndk_home = Path(sys.argv[2]).resolve()
+          expected_arch = sys.argv[3]
+          uci_date = sys.argv[4]
+          ndk_bin = (ndk_home / "toolchains/llvm/prebuilt/linux-x86_64/bin").resolve()
+
+          with compile_file.open(encoding="utf-8") as f:
+              entries = json.load(f)
+
+          cpp_count = 0
+          for entry in entries:
+              if Path(entry.get("file", "")).suffix.lower() not in (".cpp", ".cc", ".cxx", ".c++"):
+                  continue
+
+              args = entry.get("arguments") or shlex.split(entry["command"])
+              compiler = args[0]
+              if os.path.isabs(compiler):
+                  compiler_path = Path(compiler)
+              else:
+                  found = shutil.which(compiler)
+                  if found is None:
+                      raise SystemExit(f"Compiler not found: {compiler}")
+                  compiler_path = Path(found)
+              compiler_real = compiler_path.resolve()
+
+              try:
+                  compiler_real.relative_to(ndk_bin)
+              except ValueError:
+                  raise SystemExit(f"Non-NDK compiler used: {compiler_real}")
+
+              flags = set(args[1:])
+              required = {
+                  f"-march={expected_arch}",
+                  "-mtune=cortex-a76",
+              }
+              if not required.issubset(flags):
+                  raise SystemExit(f"Missing flags in {entry['file']}: {required - flags}")
+
+              if not any(arg.startswith("-Dbread_BUILD_DATE=") and uci_date in arg for arg in args):
+                  raise SystemExit(f"UCI date definition missing from {entry['file']}")
+
+              cpp_count += 1
+
+          if cpp_count == 0:
+              raise SystemExit("No C++ compile commands were found.")
+
+          print(f"Verified {cpp_count} C++ compile commands.")
+          print(f"NDK compiler: {ndk_bin}")
+          print(f"Target: {expected_arch}")
+          print(f"UCI date: {uci_date}")
+          PY
+
+      - name: Build Bread ${{ matrix.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+
+          cmake --build "$BUILD_DIR" \
+            --target bread_engine \
+            --parallel 2 \
+            --verbose
+
+          BIN="$BUILD_DIR/bread_engine_${BREAD_VERSION}"
+          test -s "$BIN"
+          echo "Built: $BIN"
+          ls -lh "$BIN"
+
+      - name: Verify Android ARM64 ELF and static C++ runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+          BIN="$BUILD_DIR/bread_engine_${BREAD_VERSION}"
+
+          "$NDK_BIN/llvm-readelf" -h "$BIN" > "$BUILD_DIR/elf-header.txt"
+          "$NDK_BIN/llvm-readelf" -l "$BIN" > "$BUILD_DIR/elf-program-headers.txt"
+          "$NDK_BIN/llvm-readelf" -d "$BIN" > "$BUILD_DIR/elf-dynamic.txt"
+
+          file "$BIN"
+
+          grep -q 'Class:.*ELF64' "$BUILD_DIR/elf-header.txt"
+          grep -q 'Machine:.*AArch64' "$BUILD_DIR/elf-header.txt"
+          grep -Fq '/system/bin/linker64' "$BUILD_DIR/elf-program-headers.txt"
+
+          if grep -Fq 'libc++_shared.so' "$BUILD_DIR/elf-dynamic.txt"; then
+            echo "ERROR: Binary depends on libc++_shared.so."
+            grep -F 'libc++_shared.so' "$BUILD_DIR/elf-dynamic.txt"
+            exit 1
+          fi
+
+          echo "Android ARM64 ELF and static C++ runtime verified."
+
+      - name: Verify NEON and DotProd instruction output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+          BIN="$BUILD_DIR/bread_engine_${BREAD_VERSION}"
+          DISASSEMBLY="$BUILD_DIR/disassembly.txt"
+
+          "$NDK_BIN/llvm-objdump" -d "$BIN" > "$DISASSEMBLY"
+
+          if ! grep -Eiq \
+            '\b(add|sub|max|min|mul|smull|smlal|sqadd|sqsub)[[:space:]]+v[0-9]+\.' \
+            "$DISASSEMBLY"; then
+            echo "ERROR: ARM NEON vector instructions were not detected."
+            exit 1
+          fi
+
+          SDOT_COUNT="$(grep -Eic '[[:space:]](sdot|udot)[[:space:]]' "$DISASSEMBLY" || true)"
+          echo "$SDOT_COUNT" > "$BUILD_DIR/sdot-count.txt"
+
+          if [[ "${{ matrix.variant }}" == "neon" && "$SDOT_COUNT" != "0" ]]; then
+            echo "ERROR: DotProd instruction unexpectedly present in baseline NEON binary."
+            exit 1
+          fi
+
+          if [[ "${{ matrix.variant }}" == "dotprod" && "$SDOT_COUNT" == "0" ]]; then
+            echo "NOTE: DotProd target is enabled, but no SDOT/UDOT instruction was emitted."
+          fi
+
+          echo "NEON vector instructions confirmed."
+          echo "SDOT/UDOT instruction count: $SDOT_COUNT"
+
+      - name: Verify UCI build identity
+        shell: bash
+        env:
+          UCI_DATE: ${{ inputs.uci_date }}
+        run: |
+          set -euo pipefail
+
+          BIN="build-${{ matrix.variant }}/bread_engine_${BREAD_VERSION}"
+          strings "$BIN" > "build-${{ matrix.variant }}/binary-strings.txt"
+          grep -Fq "$UCI_DATE" "build-${{ matrix.variant }}/binary-strings.txt"
+          grep -Fq 'bread_BUILD_DATE' src/uci.cpp
+
+          echo "Bread ${BREAD_VERSION} build date ${UCI_DATE} verified in binary strings."
+
+      - name: Prepare engine-only artifact
+        shell: bash
+        env:
+          UCI_DATE: ${{ inputs.uci_date }}
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+          BIN="$BUILD_DIR/bread_engine_${BREAD_VERSION}"
+          STAGING="$RUNNER_TEMP/bread-artifact-${{ matrix.variant }}"
+
+          mkdir -p "$STAGING"
+          cp "$BIN" "$STAGING/bread"
+          cp nnue-model.sha256 "$STAGING/nnue-model-files.sha256"
+          cp "$BUILD_DIR/sdot-count.txt" "$STAGING/sdot-instruction-count.txt"
+          cp simde-version.txt "$STAGING/simde-version.txt"
+
+          (
+            cd "$STAGING"
+            sha256sum bread > SHA256SUMS.txt
+          )
+
+          cat > "$STAGING/build-info.txt" <<EOF
+          Engine: Bread
+          Version: ${BREAD_VERSION}
+          UCI build date: ${UCI_DATE}
+          Target: Android
+          ABI: arm64-v8a
+          Android API: ${ANDROID_API}
+          NDK: ${NDK_VERSION} (${NDK_REVISION})
+          Build variant: ${{ matrix.name }}
+          Architecture: ${{ matrix.arch }}
+          CPU tuning: cortex-a76
+          SIMD API: AVX2 aliases through SIMDe on ARM NEON
+          NNUE: embedded model
+          SIMDe package: $(cat simde-version.txt)
+          DotProd target: ${{ matrix.dotprod }}
+          SDOT/UDOT count: $(cat "$BUILD_DIR/sdot-count.txt")
+          Source commit: ${GITHUB_SHA}
+          EOF
+
+          ls -lh "$STAGING"
+
+          {
+            echo "### Bread artifact ready"
+            echo "- Variant: ${{ matrix.name }}"
+            echo "- Artifact: ${{ matrix.artifact }}-${UCI_DATE}"
+            echo "- SDOT/UDOT count: $(cat "$BUILD_DIR/sdot-count.txt")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ${{ matrix.name }} engine
         uses: actions/upload-artifact@v4
         with:
-          name: bread-${{ matrix.variant }}-arm64
-          path: artifact-${{ matrix.variant }}/bread-${{ matrix.variant }}-arm64
+          name: ${{ matrix.artifact }}-${{ inputs.uci_date }}
+          path: ${{ runner.temp }}/bread-artifact-${{ matrix.variant }}/
           if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
