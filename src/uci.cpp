@@ -1,6 +1,10 @@
 
 #include "uci.hpp"
 
+#ifndef bread_BUILD_DATE
+#define bread_BUILD_DATE ""
+#endif
+
 UCIAgent::UCIAgent(): workers(1, tt) {};
 
 bool UCIAgent::process_uci_command(std::string command){
@@ -11,7 +15,10 @@ bool UCIAgent::process_uci_command(std::string command){
     std::string first = parsed_command[0];
 
     if (first == "uci"){
-        std::cout << "id name Bread Engine " << bread_VERSION << std::endl;
+        std::cout << "id name Bread Engine " << bread_VERSION;
+        if (bread_BUILD_DATE[0] != '\0')
+            std::cout << " " << bread_BUILD_DATE;
+        std::cout << std::endl;
         std::cout << "id author Nonlinear" << std::endl;
         std::cout << std::endl;
         std::cout << "option name SyzygyPath type string default <empty>" << std::endl;
