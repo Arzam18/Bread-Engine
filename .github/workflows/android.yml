@@ -1,3 +1,4 @@
+
 name: Bread Android ARM64 NEON and DotProd
 
 on:
@@ -101,9 +102,19 @@ jobs:
           SIMDE_HEADER="/usr/include/simde/x86/avx2.h"
           test -s "$SIMDE_HEADER"
 
+          # NDK Clang does not search Ubuntu's host /usr/include directory.
+          # Copy only SIMDe headers to a dedicated include root.
+          SIMDE_ROOT="$RUNNER_TEMP/simde-include"
+          mkdir -p "$SIMDE_ROOT"
+          cp -a /usr/include/simde "$SIMDE_ROOT/"
+
+          test -s "$SIMDE_ROOT/simde/x86/avx2.h"
+          echo "SIMDE_INCLUDE_DIR=$SIMDE_ROOT" >> "$GITHUB_ENV"
+
           echo "===== Installed SIMDe package ====="
           dpkg-query -W -f='${Version}\n' libsimde-dev | tee simde-version.txt
-          echo "SIMDe header: $SIMDE_HEADER"
+          echo "SIMDe header: $SIMDE_ROOT/simde/x86/avx2.h"
+          echo "SIMDe include root: $SIMDE_ROOT"
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -229,6 +240,7 @@ jobs:
           set -euo pipefail
 
           PROBE="$RUNNER_TEMP/bread-simde-probe.cpp"
+
           cat > "$PROBE" <<'CPP'
           #define SIMDE_ENABLE_NATIVE_ALIASES
           #include <simde/x86/avx2.h>
@@ -246,9 +258,12 @@ jobs:
           }
           CPP
 
+          test -s "$SIMDE_INCLUDE_DIR/simde/x86/avx2.h"
+
           "$ANDROID_CXX" \
             -std=c++20 \
             -O3 \
+            -I"$SIMDE_INCLUDE_DIR" \
             -march="${{ matrix.arch }}" \
             -mtune=cortex-a76 \
             -fsyntax-only \
@@ -277,7 +292,7 @@ jobs:
             -DCMAKE_ANDROID_STL_TYPE=c++_static \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_CXX_COMPILER="$ANDROID_CXX" \
-            -DCMAKE_CXX_FLAGS="-O3 -mtune=cortex-a76" \
+            -DCMAKE_CXX_FLAGS="-O3 -I$SIMDE_INCLUDE_DIR -mtune=cortex-a76" \
             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
             -Dbread_ARCH="${{ matrix.arch }}" \
             -Dbread_BUILD_DATE="$UCI_DATE"
@@ -297,7 +312,8 @@ jobs:
             "$COMPILE_COMMANDS" \
             "$ANDROID_NDK_HOME" \
             "${{ matrix.arch }}" \
-            "$UCI_DATE" <<'PY'
+            "$UCI_DATE" \
+            "$SIMDE_INCLUDE_DIR" <<'PY'
           import json
           import os
           import shlex
@@ -309,18 +325,23 @@ jobs:
           ndk_home = Path(sys.argv[2]).resolve()
           expected_arch = sys.argv[3]
           uci_date = sys.argv[4]
+          simde_include = Path(sys.argv[5]).resolve()
           ndk_bin = (ndk_home / "toolchains/llvm/prebuilt/linux-x86_64/bin").resolve()
 
           with compile_file.open(encoding="utf-8") as f:
               entries = json.load(f)
 
           cpp_count = 0
+
           for entry in entries:
-              if Path(entry.get("file", "")).suffix.lower() not in (".cpp", ".cc", ".cxx", ".c++"):
+              if Path(entry.get("file", "")).suffix.lower() not in (
+                  ".cpp", ".cc", ".cxx", ".c++"
+              ):
                   continue
 
               args = entry.get("arguments") or shlex.split(entry["command"])
               compiler = args[0]
+
               if os.path.isabs(compiler):
                   compiler_path = Path(compiler)
               else:
@@ -328,6 +349,7 @@ jobs:
                   if found is None:
                       raise SystemExit(f"Compiler not found: {compiler}")
                   compiler_path = Path(found)
+
               compiler_real = compiler_path.resolve()
 
               try:
@@ -340,11 +362,34 @@ jobs:
                   f"-march={expected_arch}",
                   "-mtune=cortex-a76",
               }
-              if not required.issubset(flags):
-                  raise SystemExit(f"Missing flags in {entry['file']}: {required - flags}")
 
-              if not any(arg.startswith("-Dbread_BUILD_DATE=") and uci_date in arg for arg in args):
-                  raise SystemExit(f"UCI date definition missing from {entry['file']}")
+              if not required.issubset(flags):
+                  raise SystemExit(
+                      f"Missing flags in {entry['file']}: {required - flags}"
+                  )
+
+              if not any(
+                  arg.startswith("-Dbread_BUILD_DATE=") and uci_date in arg
+                  for arg in args
+              ):
+                  raise SystemExit(
+                      f"UCI date definition missing from {entry['file']}"
+                  )
+
+              has_simde_include = any(
+                  arg == f"-I{simde_include}" or
+                  (
+                      arg == "-I"
+                      and i + 1 < len(args)
+                      and Path(args[i + 1]).resolve() == simde_include
+                  )
+                  for i, arg in enumerate(args)
+              )
+
+              if not has_simde_include:
+                  raise SystemExit(
+                      f"SIMDe include path missing from {entry['file']}"
+                  )
 
               cpp_count += 1
 
@@ -354,6 +399,7 @@ jobs:
           print(f"Verified {cpp_count} C++ compile commands.")
           print(f"NDK compiler: {ndk_bin}")
           print(f"Target: {expected_arch}")
+          print(f"SIMDe include root: {simde_include}")
           print(f"UCI date: {uci_date}")
           PY
 
