@@ -102,8 +102,6 @@ jobs:
           SIMDE_HEADER="/usr/include/simde/x86/avx2.h"
           test -s "$SIMDE_HEADER"
 
-          # NDK Clang does not search Ubuntu's host /usr/include directory.
-          # Copy only SIMDe headers to a dedicated include root.
           SIMDE_ROOT="$RUNNER_TEMP/simde-include"
           mkdir -p "$SIMDE_ROOT"
           cp -a /usr/include/simde "$SIMDE_ROOT/"
@@ -113,7 +111,6 @@ jobs:
 
           echo "===== Installed SIMDe package ====="
           dpkg-query -W -f='${Version}\n' libsimde-dev | tee simde-version.txt
-          echo "SIMDe header: $SIMDE_ROOT/simde/x86/avx2.h"
           echo "SIMDe include root: $SIMDE_ROOT"
 
       - name: Set up Java 17
@@ -234,44 +231,54 @@ jobs:
           echo "AArch64 compiler target verified: $EXPECTED_ARCH"
           echo "Advanced SIMD / NEON compiler feature verified."
 
-      - name: Compile SIMDe intrinsic probe
+      - name: Compile Bread ARM64 NNUE headers and SIMDe probe
         shell: bash
         run: |
           set -euo pipefail
 
-          PROBE="$RUNNER_TEMP/bread-simde-probe.cpp"
+          PROBE="$RUNNER_TEMP/bread-arm64-simde-probe.cpp"
 
           cat > "$PROBE" <<'CPP'
-          #define SIMDE_ENABLE_NATIVE_ALIASES
-          #include <simde/x86/avx2.h>
+          #include "nnue/nnue.hpp"
+          #include "nnue/simd.hpp"
 
-          __m256i bread_probe_shift_left(__m256i value, int count) {
-              return _mm256_sll_epi16(value, _mm_cvtsi32_si128(count));
+          #if !defined(__aarch64__)
+          #error "Bread Android build is not targeting AArch64."
+          #endif
+
+          #if !defined(__ARM_NEON)
+          #error "ARM NEON is not enabled."
+          #endif
+
+          vec_int32 bread_probe_shift_left(vec_int32 value) {
+              return slli_epi16(value, 3);
           }
 
-          __m256i bread_probe_shift_right(__m256i value, int count) {
-              return _mm256_sra_epi32(value, _mm_cvtsi32_si128(count));
+          vec_int32 bread_probe_shift_right(vec_int32 value) {
+              return srai_epi32(value, 3);
           }
 
-          __m256i bread_probe_madd(__m256i a, __m256i b) {
-              return _mm256_madd_epi16(a, b);
+          vec_int32 bread_probe_madd(vec_int16 a, vec_int16 b) {
+              return madd_epi16(a, b);
           }
           CPP
-
-          test -s "$SIMDE_INCLUDE_DIR/simde/x86/avx2.h"
 
           "$ANDROID_CXX" \
             -std=c++20 \
             -O3 \
             -I"$SIMDE_INCLUDE_DIR" \
+            -Isrc \
+            -Isrc/nnue \
+            -Isrc/extern \
+            -Isrc/extern/Fathom/src \
             -march="${{ matrix.arch }}" \
             -mtune=cortex-a76 \
             -fsyntax-only \
             "$PROBE"
 
-          echo "SIMDe AVX2 aliases and variable-shift intrinsics compile for ${{ matrix.arch }}."
+          echo "Bread NNUE headers and SIMDe variable-shift intrinsics compile for AArch64."
 
-      - name: Configure Bread ${{ matrix.name }}
+      - name: Configure Bread ${{ matrix.name }} for Android ARM64
         shell: bash
         env:
           UCI_DATE: ${{ inputs.uci_date }}
@@ -281,23 +288,24 @@ jobs:
           BUILD_DIR="build-${{ matrix.variant }}"
           TOOLCHAIN="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
 
+          # Explicit NDK ABI and platform selection.
+          # Do not replace ANDROID_ABI with CMAKE_ANDROID_ARCH_ABI.
           cmake \
             -S . \
             -B "$BUILD_DIR" \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DANDROID_STL=c++_static \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_VERSION="$ANDROID_API" \
-            -DCMAKE_ANDROID_ARCH_ABI=arm64-v8a \
-            -DCMAKE_ANDROID_STL_TYPE=c++_static \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_CXX_COMPILER="$ANDROID_CXX" \
             -DCMAKE_CXX_FLAGS="-O3 -I$SIMDE_INCLUDE_DIR -mtune=cortex-a76" \
             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++" \
             -Dbread_ARCH="${{ matrix.arch }}" \
             -Dbread_BUILD_DATE="$UCI_DATE"
 
-      - name: Verify generated compiler configuration
+      - name: Verify Android ABI, API and every C++ compile command
         shell: bash
         env:
           UCI_DATE: ${{ inputs.uci_date }}
@@ -305,17 +313,33 @@ jobs:
           set -euo pipefail
 
           BUILD_DIR="build-${{ matrix.variant }}"
-          COMPILE_COMMANDS="$BUILD_DIR/compile_commands.json"
-          test -s "$COMPILE_COMMANDS"
+          CACHE="$BUILD_DIR/CMakeCache.txt"
+          COMMANDS="$BUILD_DIR/compile_commands.json"
+
+          test -s "$CACHE"
+          test -s "$COMMANDS"
+
+          grep -Eq '^ANDROID_ABI:[^=]*=arm64-v8a$' "$CACHE" || {
+            echo "ERROR: CMake did not select arm64-v8a."
+            grep -E 'ANDROID_ABI|CMAKE_ANDROID_ARCH_ABI' "$CACHE" || true
+            exit 1
+          }
+
+          grep -Eq '^ANDROID_PLATFORM:[^=]*=android-24$' "$CACHE" || {
+            echo "ERROR: CMake did not select Android API 24."
+            grep -E 'ANDROID_PLATFORM|ANDROID_NATIVE_API_LEVEL' "$CACHE" || true
+            exit 1
+          }
 
           python3 - \
-            "$COMPILE_COMMANDS" \
+            "$COMMANDS" \
             "$ANDROID_NDK_HOME" \
             "${{ matrix.arch }}" \
             "$UCI_DATE" \
             "$SIMDE_INCLUDE_DIR" <<'PY'
           import json
           import os
+          import re
           import shlex
           import shutil
           import sys
@@ -357,15 +381,60 @@ jobs:
               except ValueError:
                   raise SystemExit(f"Non-NDK compiler used: {compiler_real}")
 
+              target_args = [a for a in args if a.startswith("--target=")]
+
+              if target_args:
+                  if not any(
+                      re.match(r"--target=aarch64.*linux-android24$", a)
+                      for a in target_args
+                  ):
+                      raise SystemExit(
+                          f"Wrong Android target for {entry['file']}: {target_args}"
+                      )
+              else:
+                  compiler_name = compiler_path.name
+                  if not compiler_name.startswith("aarch64-linux-android24-"):
+                      raise SystemExit(
+                          f"Missing AArch64 API 24 target for {entry['file']}: {compiler_name}"
+                      )
+
+              forbidden = [
+                  a for a in args
+                  if a == "-mthumb"
+                  or a == "-march=armv7-a"
+                  or a.startswith("--target=armv7")
+              ]
+
+              if forbidden:
+                  raise SystemExit(
+                      f"32-bit ARM flags found for {entry['file']}: {forbidden}"
+                  )
+
               flags = set(args[1:])
               required = {
                   f"-march={expected_arch}",
                   "-mtune=cortex-a76",
               }
 
-              if not required.issubset(flags):
+              missing = required - flags
+              if missing:
                   raise SystemExit(
-                      f"Missing flags in {entry['file']}: {required - flags}"
+                      f"Missing flags in {entry['file']}: {sorted(missing)}"
+                  )
+
+              has_simde = any(
+                  arg == f"-I{simde_include}"
+                  or (
+                      arg == "-I"
+                      and i + 1 < len(args)
+                      and Path(args[i + 1]).resolve() == simde_include
+                  )
+                  for i, arg in enumerate(args)
+              )
+
+              if not has_simde:
+                  raise SystemExit(
+                      f"SIMDe include path missing from {entry['file']}"
                   )
 
               if not any(
@@ -376,29 +445,14 @@ jobs:
                       f"UCI date definition missing from {entry['file']}"
                   )
 
-              has_simde_include = any(
-                  arg == f"-I{simde_include}" or
-                  (
-                      arg == "-I"
-                      and i + 1 < len(args)
-                      and Path(args[i + 1]).resolve() == simde_include
-                  )
-                  for i, arg in enumerate(args)
-              )
-
-              if not has_simde_include:
-                  raise SystemExit(
-                      f"SIMDe include path missing from {entry['file']}"
-                  )
-
               cpp_count += 1
 
           if cpp_count == 0:
               raise SystemExit("No C++ compile commands were found.")
 
-          print(f"Verified {cpp_count} C++ compile commands.")
-          print(f"NDK compiler: {ndk_bin}")
-          print(f"Target: {expected_arch}")
+          print(f"Verified {cpp_count} C++ compilation commands.")
+          print("Target: AArch64 / arm64-v8a / Android API 24")
+          print(f"Architecture: {expected_arch}")
           print(f"SIMDe include root: {simde_include}")
           print(f"UCI date: {uci_date}")
           PY
@@ -413,7 +467,7 @@ jobs:
           cmake --build "$BUILD_DIR" \
             --target bread_engine \
             --parallel 2 \
-            --verbose
+            --verbose 2>&1 | tee "$BUILD_DIR/build.log"
 
           BIN="$BUILD_DIR/bread_engine_${BREAD_VERSION}"
           test -s "$BIN"
@@ -486,9 +540,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          BIN="build-${{ matrix.variant }}/bread_engine_${BREAD_VERSION}"
-          strings "$BIN" > "build-${{ matrix.variant }}/binary-strings.txt"
-          grep -Fq "$UCI_DATE" "build-${{ matrix.variant }}/binary-strings.txt"
+          BUILD_DIR="build-${{ matrix.variant }}"
+          BIN="$BUILD_DIR/bread_engine_${BREAD_VERSION}"
+
+          strings "$BIN" > "$BUILD_DIR/binary-strings.txt"
+          grep -Fq "$UCI_DATE" "$BUILD_DIR/binary-strings.txt"
           grep -Fq 'bread_BUILD_DATE' src/uci.cpp
 
           echo "Bread ${BREAD_VERSION} build date ${UCI_DATE} verified in binary strings."
