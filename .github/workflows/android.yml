@@ -1,4 +1,3 @@
-
 name: Bread Android ARM64 NEON and DotProd
 
 on:
@@ -90,8 +89,67 @@ jobs:
         run: |
           set -euo pipefail
 
-          sudo apt-get update
-          sudo apt-get install -y \
+          # The hosted Ubuntu image may include a Microsoft apt source that is
+          # unrelated to Bread's dependencies. If that feed returns HTTP 403,
+          # apt-get update can fail before the NEON/DotProd build starts.
+          # Disable only that external feed; Ubuntu repositories provide every
+          # package installed below.
+          sudo python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          candidates = [Path("/etc/apt/sources.list")]
+          sources_dir = Path("/etc/apt/sources.list.d")
+          if sources_dir.is_dir():
+              candidates.extend(p for p in sources_dir.iterdir() if p.is_file())
+
+          for path in candidates:
+              if not path.is_file():
+                  continue
+
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except (OSError, UnicodeError):
+                  continue
+
+              text = text.replace("\r\n", "\n")
+              if "packages.microsoft.com" not in text:
+                  continue
+
+              if path.suffix == ".sources":
+                  # Deb822 source files contain blank-line-separated stanzas.
+                  parts = re.split(r"(\n[ \t]*\n)", text)
+                  kept = []
+                  for index in range(0, len(parts), 2):
+                      stanza = parts[index]
+                      separator = parts[index + 1] if index + 1 < len(parts) else ""
+                      if "packages.microsoft.com" in stanza:
+                          print(f"Temporarily disabling Microsoft apt stanza in {path}")
+                      else:
+                          kept.extend((stanza, separator))
+                  updated = "".join(kept)
+              else:
+                  # Traditional .list files have one repository per line.
+                  kept_lines = []
+                  for line in text.splitlines(keepends=True):
+                      if "packages.microsoft.com" in line:
+                          print(f"Temporarily disabling Microsoft apt entry in {path}")
+                      else:
+                          kept_lines.append(line)
+                  updated = "".join(kept_lines)
+
+              if updated.strip():
+                  path.write_text(updated, encoding="utf-8")
+              else:
+                  path.unlink()
+          PY
+
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
+
+          sudo apt-get install -y --no-install-recommends \
             cmake \
             ninja-build \
             file \
@@ -607,3 +665,75 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 9
+
+      - name: Collect build failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          BUILD_DIR="build-${{ matrix.variant }}"
+          DIAG_DIR="$RUNNER_TEMP/bread-diagnostics-${{ matrix.variant }}"
+          mkdir -p "$DIAG_DIR"
+
+          # Preserve the exact compiler output and generated CMake configuration
+          # without copying large object files or the NNUE model into diagnostics.
+          if [[ -d "$BUILD_DIR" ]]; then
+            for name in \
+              CMakeCache.txt \
+              compile_commands.json \
+              build.log \
+              elf-header.txt \
+              elf-program-headers.txt \
+              elf-dynamic.txt \
+              disassembly.txt \
+              sdot-count.txt \
+              CMakeConfigureLog.yaml
+            do
+              if [[ -s "$BUILD_DIR/$name" ]]; then
+                cp "$BUILD_DIR/$name" "$DIAG_DIR/"
+              fi
+            done
+
+            find "$BUILD_DIR" -maxdepth 5 -type f \
+              \( -name CMakeError.log -o -name CMakeOutput.log \) \
+              -exec cp --parents {} "$DIAG_DIR/" \; 2>/dev/null
+          fi
+
+          for name in simde-version.txt nnue-model.sha256; do
+            if [[ -s "$name" ]]; then
+              cp "$name" "$DIAG_DIR/"
+            fi
+          done
+
+          for name in \
+            .github/workflows/android.yml \
+            CMakeLists.txt \
+            src/nnue/simd.hpp \
+            src/nnue/nnue.hpp \
+            version.txt
+          do
+            if [[ -s "$name" ]]; then
+              mkdir -p "$DIAG_DIR/source/$(dirname "$name")"
+              cp "$name" "$DIAG_DIR/source/$name"
+            fi
+          done
+
+          {
+            echo "Matrix variant: ${{ matrix.variant }}"
+            echo "Architecture: ${{ matrix.arch }}"
+            echo "Runner: $RUNNER_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT"
+          } > "$DIAG_DIR/failure-context.txt"
+
+          find "$DIAG_DIR" -maxdepth 5 -type f -printf '%P (%s bytes)\n' || true
+
+      - name: Upload build failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bread-${{ matrix.variant }}-failure-diagnostics-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bread-diagnostics-${{ matrix.variant }}/
+          if-no-files-found: ignore
+          retention-days: 7
